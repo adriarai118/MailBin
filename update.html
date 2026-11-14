@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>آپدیت جیمیل‌بین</title>
+  <style>
+    :root { --bg:#f6f7f9; --card:#fff; --border:#e3e6ea; --text:#1f2328; --muted:#69707a; --accent:#d93025; --ok:#188038; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#151618; --card:#1f2124; --border:#34373c; --text:#e8eaed; --muted:#9aa0a6; --accent:#f28b82; --ok:#81c995; } }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.8 Vazirmatn,"Segoe UI",Tahoma,sans-serif; }
+    .wrap { max-width:600px; margin:40px auto; padding:0 16px; }
+    h1 { font-size:20px; margin:0 0 16px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+    .row { display:flex; justify-content:space-between; gap:12px; padding:4px 0; }
+    .row span:last-child { font-weight:700; direction:ltr; }
+    .muted { color:var(--muted); font-size:13px; }
+    input { font:inherit; padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); width:100%; box-sizing:border-box; direction:ltr; }
+    button { font:inherit; font-weight:600; padding:8px 16px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); cursor:pointer; margin-top:10px; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    @media (prefers-color-scheme: dark) { button.primary { color:#151618; } }
+    button:disabled { opacity:.5; cursor:default; }
+    #log { font:12px/1.7 Consolas,monospace; direction:ltr; text-align:left; white-space:pre-wrap; max-height:220px; overflow:auto; color:var(--muted); }
+    .ok { color:var(--ok); } .bad { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>آپدیت جیمیل‌بین از GitHub</h1>
+
+    <div class="card">
+      <div class="row"><span>نسخه نصب‌شده</span><span id="cur"></span></div>
+      <div class="row"><span>آخرین نسخه در GitHub</span><span id="latest">—</span></div>
+      <div id="status" class="muted"></div>
+      <button id="checkBtn">بررسی دوباره</button>
+      <button id="updBtn" class="primary" disabled>آپدیت</button>
+    </div>
+
+    <div class="card">
+      <div class="muted">پوشه اکستنشن روی کامپیوتر (همان پوشه‌ای که با Load unpacked اضافه کردید)</div>
+      <div id="folder" style="font-weight:700;margin:4px 0">انتخاب نشده</div>
+      <button id="pickBtn">انتخاب پوشه</button>
+    </div>
+
+    <div class="card">
+      <div class="muted">ریپازیتوری GitHub (صاحب/نام)</div>
+      <input id="repo" placeholder="adriarai118/mailbin">
+    </div>
+
+    <div class="card" id="logCard" hidden><div id="log"></div></div>
+  </div>
+  <script src="update-config.js"></script>
+  <script src="update.js"></script>
+</body>
+</html>

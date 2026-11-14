@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "جیمیل‌بین — MailBin",
+  "short_name": "MailBin",
+  "version": "1.5.0",
+  "description": "نمایش ایمیل‌های خوانده‌نشده جیمیل، شمارنده روی آیکون و اعلان ایمیل جدید — با پشتیبانی از چند حساب.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "جیمیل‌بین",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "permissions": ["alarms", "notifications", "storage", "tabs", "cookies", "offscreen", "declarativeNetRequest"],
+  "host_permissions": ["https://mail.google.com/*", "https://*.googleusercontent.com/*"]
+}
