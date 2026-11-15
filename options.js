@@ -1,4 +1,4 @@
-const DEFAULTS = { interval: 1, notify: true, maxAccounts: 5, label: '', scope: 'inbox', markOnOpen: true };
+const DEFAULTS = { interval: 1, notify: true, maxAccounts: 5, label: '', scope: 'inbox', markOnOpen: true, otpAutofill: true, otpCopy: true };
 const ids = Object.keys(DEFAULTS);
 
 chrome.storage.sync.get('settings').then(({ settings }) => {

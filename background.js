@@ -3,7 +3,7 @@ importScripts('update-config.js');
 // جیمیل‌بین — سرویس پس‌زمینه
 // ایمیل‌ها را از فید Atom جیمیل می‌خواند (با همان ورودی که در کروم لاگین هستید؛ نیازی به رمز یا API نیست).
 
-const DEFAULTS = { interval: 1, notify: true, maxAccounts: 5, label: '', scope: 'inbox', markOnOpen: true };
+const DEFAULTS = { interval: 1, notify: true, maxAccounts: 5, label: '', scope: 'inbox', markOnOpen: true, otpAutofill: true, otpCopy: true };
 const GMAIL = 'https://mail.google.com/mail/u/';
 
 // ---------- راه‌اندازی و زمان‌بندی ----------
@@ -173,7 +173,17 @@ async function notifyNew(accounts, s) {
     }
   }
   await chrome.storage.local.set({ knownIds: [...new Set([...current, ...known])].slice(-500) });
-  if (firstRun || !s.notify || !fresh.length) return;
+  if (firstRun || !fresh.length) return;
+
+  // ایمیل‌های کد تایید: جاگذاری خودکار / کپی، به‌جای اعلان معمولی
+  const normal = [];
+  for (const item of fresh) {
+    if (await handleOtp(item.a, item.e, s)) continue;
+    normal.push(item);
+  }
+  fresh.length = 0;
+  fresh.push(...normal);
+  if (!s.notify || !fresh.length) return;
 
   if (fresh.length > 3) {
     chrome.notifications.create(`multi|${Date.now()}`, {
@@ -197,7 +207,16 @@ async function notifyNew(accounts, s) {
   }
 }
 
+chrome.notifications.onButtonClicked.addListener((id) => {
+  if (id.startsWith('otp|')) copyText(id.split('|')[1]);
+});
+
 chrome.notifications.onClicked.addListener((id) => {
+  if (id.startsWith('otp|')) {
+    copyText(id.split('|')[1]);
+    chrome.notifications.clear(id);
+    return;
+  }
   if (id === 'update') {
     chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
     chrome.notifications.clear(id);
@@ -322,7 +341,7 @@ async function markReadViaFrame(index, messageId, stillUnread) {
     if (!(await chrome.offscreen.hasDocument())) {
       await chrome.offscreen.createDocument({
         url: 'offscreen.html',
-        reasons: ['IFRAME_SCRIPTING'],
+        reasons: ['IFRAME_SCRIPTING', 'CLIPBOARD'],
         justification: 'باز کردن نامرئی ایمیل در جیمیل تا خوانده‌شده ثبت شود',
       });
     }
@@ -347,11 +366,138 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   if (await chrome.offscreen.hasDocument()) chrome.offscreen.closeDocument().catch(() => {});
 });
 
+// ---------- کد تایید (OTP) ----------
+const FA_DIGITS = '۰۱۲۳۴۵۶۷۸۹', AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+const OTP_HINT = /(code|otp|passcode|pin\b|one[- ]?time|verif|2fa|two[- ]factor|security|sign[- ]?in|log[- ]?in|confirm|کد|رمز|تایید|تأیید|ورود|یکبار|یک‌بار)/i;
+
+function normDigits(t) {
+  return t.replace(/[۰-۹]/g, (d) => FA_DIGITS.indexOf(d)).replace(/[٠-٩]/g, (d) => AR_DIGITS.indexOf(d));
+}
+
+function extractCode(text) {
+  const t = normDigits(text || '');
+  if (!OTP_HINT.test(t)) return null;
+  // عدد نزدیک کلمه کلیدی: «کد تایید شما: 123456» ، «Your code is G-123456»
+  const near = t.match(/(?:code|otp|passcode|pin|کد|رمز)[^0-9a-z\u0600-\u06ff]{0,3}(?:[^\n0-9]{0,40}?)\b([A-Z]-)?(\d{4,8})\b/i)
+            || t.match(/\b([A-Z]-)?(\d{4,8})\b[^0-9\n]{0,40}(?:is your|code|کد|رمز)/i);
+  if (near) return near[2];
+  // در غیر این صورت: تنها عدد ۴ تا ۸ رقمی (به‌جز سال)
+  const nums = [...new Set((t.match(/(?<![\d.,:\/-])\d{4,8}(?![\d.,:\/-])/g) || []).filter((n) => !(n.length === 4 && /^(19|20)\d\d$/.test(n))))];
+  if (nums.length === 1) return nums[0];
+  const six = nums.filter((n) => n.length === 6);
+  return six.length === 1 ? six[0] : null;
+}
+
+function baseDomain(host) {
+  const p = (host || '').toLowerCase().replace(/\.$/, '').split('.');
+  if (p.length <= 2) return p.join('.');
+  const sld = p[p.length - 2];
+  const n = (p[p.length - 1].length === 2 && /^(co|com|ac|gov|org|net|sch|id|gen)$/.test(sld)) ? 3 : 2;
+  return p.slice(-n).join('.');
+}
+
+async function mailText(index, messageId) {
+  try {
+    const ik = await getIk(index);
+    const r = await fetch(`${GMAIL}${index}/?${ik ? `ik=${ik}&` : ''}view=pt&search=all&th=${messageId}`, { credentials: 'include', cache: 'no-store' });
+    if (!r.ok) return '';
+    const h = await r.text();
+    return decode(h.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<br\s*\/?>|<\/(p|div|tr|td|li)>/gi, '\n').replace(/<[^>]+>/g, ' ')).replace(/[ \t]+/g, ' ');
+  } catch { return ''; }
+}
+
+async function handleOtp(a, e, s) {
+  if (!s.otpAutofill && !s.otpCopy) return false;
+  const issued = Date.parse(e.issued) || Date.now();
+  if (Date.now() - issued > 10 * 60e3) return false; // فقط ایمیل‌های تازه
+  let code = extractCode(`${e.subject}\n${e.summary}`);
+  if (!code && OTP_HINT.test(`${e.subject} ${e.summary}`)) code = extractCode(await mailText(a.index, e.messageId));
+  if (!code) return false;
+
+  let filled = false, where = '';
+  if (s.otpAutofill) {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tab && /^https?:/.test(tab.url || '')) {
+      const host = new URL(tab.url).hostname;
+      const { otpWanted = {} } = await chrome.storage.session.get('otpWanted');
+      const w = otpWanted[tab.id];
+      const sender = baseDomain((e.fromEmail || '').split('@')[1]);
+      const sameSite = sender && sender === baseDomain(host);
+      const askedRecently = w && w.host === host && Date.now() - w.at < 5 * 60e3 && issued >= w.at - 60e3;
+      if (sameSite || askedRecently) {
+        try {
+          const r = await chrome.tabs.sendMessage(tab.id, { type: 'fillOtp', code });
+          filled = !!(r && r.ok);
+          where = host;
+        } catch { /* صفحه اسکریپت ندارد */ }
+      }
+    }
+  }
+  if (s.otpCopy) await copyText(code);
+  if (filled) stopFastPoll();
+
+  chrome.notifications.create(`otp|${code}|${Date.now()}`, {
+    type: 'basic',
+    iconUrl: 'icons/icon128.png',
+    title: filled ? `کد ${code} جاگذاری شد` : `کد تایید: ${code}`,
+    message: filled ? `در ${where}${s.otpCopy ? ' — در کلیپ‌بورد هم کپی شد' : ''}` : (s.otpCopy ? 'در کلیپ‌بورد کپی شد (Ctrl+V)' : 'برای کپی کلیک کنید'),
+    contextMessage: e.from || a.email,
+    buttons: [{ title: 'کپی کد' }],
+    priority: 2,
+  });
+  return true;
+}
+
+async function copyText(text) {
+  try {
+    if (!(await chrome.offscreen.hasDocument())) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['IFRAME_SCRIPTING', 'CLIPBOARD'],
+        justification: 'کپی کد تایید / باز کردن نامرئی ایمیل',
+      });
+    }
+    await chrome.runtime.sendMessage({ target: 'offscreen', type: 'copy', text });
+    chrome.alarms.create('closeFrame', { delayInMinutes: 1 });
+  } catch (err) { console.warn('copy failed', err); }
+}
+
+// وقتی صفحه‌ای کد تایید می‌خواهد، ایمیل‌ها هر ۴ ثانیه (تا ۳ دقیقه) بررسی می‌شوند
+let fastUntil = 0, fastRunning = false;
+function stopFastPoll() { fastUntil = 0; }
+async function fastPoll() {
+  if (fastRunning) return;
+  fastRunning = true;
+  try {
+    while (Date.now() < fastUntil) {
+      await check();
+      await new Promise((r) => setTimeout(r, 4000));
+    }
+  } finally { fastRunning = false; }
+}
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const { otpWanted = {} } = await chrome.storage.session.get('otpWanted');
+  if (otpWanted[tabId]) { delete otpWanted[tabId]; chrome.storage.session.set({ otpWanted }); }
+});
+
 // ---------- پیام‌ها از پاپ‌آپ ----------
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === 'refresh') {
     check().then(() => chrome.storage.local.get('state')).then(({ state }) => reply(state));
     return true;
+  }
+  if (msg.type === 'otpWanted' && sender.tab) {
+    (async () => {
+      const s = await getSettings();
+      if (!s.otpAutofill) return;
+      const { otpWanted = {} } = await chrome.storage.session.get('otpWanted');
+      otpWanted[sender.tab.id] = { host: msg.host, at: Date.now() };
+      await chrome.storage.session.set({ otpWanted });
+      fastUntil = Date.now() + 3 * 60e3;
+      fastPoll();
+    })();
+    return;
   }
   if (msg.type === 'markRead') {
     markRead(msg.index, msg.messageId, msg.id).then(reply);
