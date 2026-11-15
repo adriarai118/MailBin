@@ -1,5 +1,4 @@
-// صفحه نامرئی: جیمیل را در iframe باز می‌کند تا ایمیل خوانده‌شده شود
-const frame = document.getElementById('g');
+// صفحه نامرئی: کپی متن در کلیپ‌بورد
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.target !== 'offscreen') return;
   if (msg.type === 'copy') {
@@ -12,13 +11,4 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     reply(true);
     return;
   }
-  if (msg.type !== 'gframe') return;
-  // اگر جیمیل همین حساب قبلاً بارگذاری شده، فقط بخش # عوض می‌شود (بدون بارگذاری دوباره)
-  const t0 = Date.now();
-  let done = false;
-  const finish = (loaded) => { if (done) return; done = true; reply({ loaded, ms: Date.now() - t0 }); };
-  frame.addEventListener('load', () => finish(true), { once: true });
-  setTimeout(() => finish(false), 20000);
-  frame.src = msg.url;
-  return true;
 });

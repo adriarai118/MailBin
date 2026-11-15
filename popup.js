@@ -101,8 +101,8 @@ function mailRow(m) {
       el('button', { class: 'mk', title: 'علامت خوانده‌شده', onclick: async (e) => {
         e.stopPropagation();
         row.classList.add('gone');
-        const r = await markRead(m);
-        if (!r || !r.ok) { row.classList.remove('gone'); row.classList.add('failed'); row.title = 'ثبت در جیمیل ناموفق بود'; }
+        await markRead(m);
+        row.remove();
       } }, svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'))),
     el('div', { class: 'subj', dir: 'auto' }, m.subject),
     m.summary ? el('div', { class: 'snip', dir: 'auto' }, m.summary) : null);
@@ -354,35 +354,26 @@ async function showMail(m) {
       if (!atts.length && !res.probed) { res.atts = atts = await probeAtts(m).catch(() => []); res.probed = true; }
       if (attBox.isConnected) renderAtts(attBox, atts, m, bodyBox, f);
     })();
-    const { settings } = await chrome.storage.sync.get('settings');
-    if (!settings || settings.markOnOpen !== false) {
-      const st = $('#rstat');
-      st.textContent = 'در حال ثبت «خوانده‌شده»… (بار اول چند ثانیه طول می‌کشد)';
-      const r = await markRead(m);
-      if (st.isConnected) {
-        st.textContent = r && r.ok ? '✓ خوانده شد' : '⚠ در جیمیل خوانده‌شده ثبت نشد';
-        st.classList.toggle('bad', !(r && r.ok));
-        if (!(r && r.ok)) st.append(' — ', el('a', { href: '#', class: 'diaglink', onclick: (e) => { e.preventDefault(); showDiag(); } }, 'عیب‌یابی'));
-      }
-    }
   } else {
     bodyBox.replaceChildren(el('div', { class: 'fallback' },
       el('div', { class: 'note' }, 'متن کامل ایمیل دریافت نشد؛ پیش‌نمایش کوتاه:'),
       el('div', { class: 'snipfull', dir: 'auto' }, m.summary || '—'),
       el('button', { onclick: () => open(m.url) }, 'باز کردن در جیمیل')));
   }
-}
 
-async function showDiag() {
-  const d = await chrome.runtime.sendMessage({ type: 'diag' });
-  const text = JSON.stringify(d, null, 2);
-  const box = document.querySelector('.rbody');
-  if (!box) return;
-  const pre = el('pre', { class: 'diag', dir: 'ltr' }, text);
-  const btn = el('button', { onclick: async () => { await navigator.clipboard.writeText(text); btn.textContent = 'کپی شد ✓'; } }, 'کپی گزارش');
-  box.replaceChildren(el('div', { class: 'fallback' },
-    el('div', { class: 'note' }, 'این گزارش هیچ رمز یا توکنی ندارد. آن را کپی کنید و برای عیب‌یابی بفرستید:'),
-    pre, btn));
+  // «خوانده‌شده» در خود اکستنشن
+  const { settings } = await chrome.storage.sync.get('settings');
+  if (!settings || settings.markOnOpen !== false) {
+    await markRead(m);
+    const st = $('#rstat');
+    if (!st) return;
+    const undo = el('a', { href: '#', class: 'diaglink', onclick: async (e) => {
+      e.preventDefault();
+      await chrome.runtime.sendMessage({ type: 'markUnread', id: m.id });
+      st.replaceChildren('برگشت به خوانده‌نشده');
+    } }, 'بازگردانی');
+    st.replaceChildren('✓ خوانده شد — ', undo);
+  }
 }
 
 function svg(inner) {

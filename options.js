@@ -25,3 +25,9 @@ async function save() {
   clearTimeout(t);
   t = setTimeout(() => (el.textContent = ''), 1500);
 }
+
+document.getElementById('clearRead').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'clearLocalRead' });
+  const el = document.getElementById('saved');
+  el.textContent = 'همه ایمیل‌ها دوباره در لیست نمایش داده می‌شوند ✓';
+});

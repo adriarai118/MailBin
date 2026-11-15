@@ -140,6 +140,14 @@ async function doCheck() {
     return;
   }
 
+  // ایمیل‌هایی که در اکستنشن خوانده شده‌اند از لیست و شمارنده حذف شوند
+  const localRead = await getLocalRead();
+  for (const a of accounts) {
+    const before = a.entries.length;
+    a.entries = a.entries.filter((e) => !localRead[e.id]);
+    a.fullcount = Math.max(0, a.fullcount - (before - a.entries.length));
+  }
+
   const total = accounts.reduce((n, a) => n + a.fullcount, 0);
   await notifyNew(accounts, s);
   await chrome.storage.local.set({ state: { accounts, status, total, updated: Date.now() } });
@@ -264,165 +272,51 @@ async function getIk(i, fresh) {
   return m[1];
 }
 
-async function getAt(i) {
-  const cs = await chrome.cookies.getAll({ url: `${GMAIL}${i}/`, name: 'GMAIL_AT' });
-  return cs.length ? cs[0].value : null;
+// ---------- «خوانده‌شده» محلی (فقط در خود اکستنشن؛ در جیمیل تغییری نمی‌کند) ----------
+async function getLocalRead() {
+  const { localRead = {} } = await chrome.storage.local.get('localRead');
+  return localRead;
 }
 
-// درخواست‌های اکستنشن به جیمیل با Origin خود جیمیل فرستاده شوند (جیمیل درخواست با Origin اکستنشن را رد می‌کند)
-async function ensureOriginRule() {
-  await chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [2],
-    addRules: [{
-      id: 2,
-      priority: 1,
-      action: {
-        type: 'modifyHeaders',
-        requestHeaders: [
-          { header: 'origin', operation: 'set', value: 'https://mail.google.com' },
-          { header: 'referer', operation: 'set', value: 'https://mail.google.com/mail/' },
-        ],
-      },
-      condition: { urlFilter: '||mail.google.com/mail/', resourceTypes: ['xmlhttprequest'], tabIds: [-1], requestMethods: ['post'] },
-    }],
-  });
-}
-
-let lastDiag = {};
-
-async function actUrl(i, id, act, freshIk) {
-  const ik = await getIk(i, freshIk);
-  const at = await getAt(i);
-  lastDiag.ik = !!ik;
-  lastDiag.at = !!at;
-  if (!ik || !at) return null;
-  return { url: `${GMAIL}${i}/?ui=2&ik=${ik}&at=${encodeURIComponent(at)}&view=up&act=${act}&rt=j&th=${id}`, body: `at=${encodeURIComponent(at)}` };
-}
-
-async function gmailAct(i, id, act, freshIk) {
-  const u = await actUrl(i, id, act, freshIk);
-  if (!u) return false;
-  try {
-    await ensureOriginRule();
-    const r = await fetch(u.url, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' }, body: u.body });
-    const t = await r.text();
-    lastDiag.api = { status: r.status, body: t.slice(0, 160).replace(/[A-Za-z0-9_-]{24,}/g, '…') };
-    return r.ok;
-  } catch (e) { lastDiag.api = { error: String(e) }; return false; }
-}
-
-// روش ۲: اگر جیمیل در یکی از تب‌ها باز است، همان درخواست از داخل خود صفحه جیمیل فرستاده شود (بدون تغییر در تب)
-async function gmailActViaTab(i, id, act) {
-  const tabs = await chrome.tabs.query({ url: `${GMAIL}${i}/*` });
-  lastDiag.gmailTab = tabs.length > 0;
-  if (!tabs.length) return false;
-  const u = await actUrl(i, id, act, false);
-  if (!u) return false;
-  for (const t of tabs) {
-    try {
-      const r = await chrome.tabs.sendMessage(t.id, { type: 'gmailAct', url: u.url, body: u.body }, { frameId: 0 });
-      lastDiag.tab = r;
-      if (r && r.ok) return true;
-    } catch (e) { lastDiag.tab = { error: String(e) }; }
-  }
-  return false;
+async function applyState(mutator) {
+  const { state } = await chrome.storage.local.get('state');
+  if (!state || !state.accounts) return;
+  const localRead = await getLocalRead();
+  mutator(state, localRead);
+  state.total = state.accounts.reduce((n, a) => n + a.fullcount, 0);
+  await chrome.storage.local.set({ state });
+  setBadge(state.total, state.status);
 }
 
 async function markRead(index, messageId, entryId) {
-  // حذف فوری از لیست و شمارنده (تا کاربر منتظر نماند)
-  const { state } = await chrome.storage.local.get('state');
-  if (state && state.accounts) {
+  const localRead = await getLocalRead();
+  localRead[entryId] = Date.now();
+  // پاک‌سازی موارد قدیمی‌تر از ۶۰ روز
+  const old = Date.now() - 60 * 864e5;
+  for (const [k, t] of Object.entries(localRead)) if (t < old) delete localRead[k];
+  await chrome.storage.local.set({ localRead });
+  await applyState((state) => {
     for (const a of state.accounts) {
       if (a.index !== index) continue;
       const before = a.entries.length;
       a.entries = a.entries.filter((e) => e.id !== entryId);
       if (a.entries.length < before) a.fullcount = Math.max(0, a.fullcount - 1);
     }
-    state.total = state.accounts.reduce((n, a) => n + a.fullcount, 0);
-    await chrome.storage.local.set({ state });
-    setBadge(state.total, state.status);
-  }
-
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const stillUnread = async () => {
-    await check();
-    const { state: st } = await chrome.storage.local.get('state');
-    return (st?.accounts || []).some((a) => a.index === index && a.entries.some((e) => e.id === entryId));
-  };
-
-  lastDiag = { time: new Date().toISOString() };
-  // روش ۱: درخواست مستقیم به جیمیل
-  let ok = await gmailAct(index, messageId, 'rd', false);
-  if (!ok) ok = await gmailAct(index, messageId, 'rd', true);
-  if (ok) { await sleep(1500); if (!(await stillUnread())) return finish(true, 'api'); }
-  // روش ۲: از داخل تب باز جیمیل (اگر باز باشد)
-  if (await gmailActViaTab(index, messageId, 'rd')) { await sleep(1500); if (!(await stillUnread())) return finish(true, 'tab'); }
-  // روش ۳: باز کردن ایمیل در یک صفحه نامرئی داخل اکستنشن (بدون تب)
-  return finish(await markReadViaFrame(index, messageId, stillUnread), 'frame');
-}
-
-async function finish(ok, via) {
-  lastDiag.result = ok ? `ok (${via})` : 'failed';
-  await chrome.storage.local.set({ markDiag: lastDiag });
-  return { ok, via };
-}
-
-// اطلاعات عیب‌یابی (بدون هیچ توکن یا مقدار کوکی)
-async function diagnostics() {
-  const cookies = await chrome.cookies.getAll({ domain: 'mail.google.com' });
-  const { markDiag } = await chrome.storage.local.get('markDiag');
-  return {
-    version: chrome.runtime.getManifest().version,
-    chrome: (navigator.userAgent.match(/Chrome\/[\d.]+/) || [''])[0],
-    gmailCookieNames: [...new Set(cookies.map((c) => c.name))].sort(),
-    lastMarkRead: markDiag || null,
-  };
-}
-
-// جیمیل اجازه نمایش در iframe نمی‌دهد؛ فقط برای فریم‌های نامرئی خود اکستنشن (tabId = -1) این محدودیت برداشته می‌شود
-async function ensureFrameRules() {
-  await chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [1],
-    addRules: [{
-      id: 1,
-      priority: 1,
-      action: {
-        type: 'modifyHeaders',
-        responseHeaders: [
-          { header: 'x-frame-options', operation: 'remove' },
-          { header: 'content-security-policy', operation: 'remove' },
-        ],
-      },
-      condition: { urlFilter: '||mail.google.com/', resourceTypes: ['sub_frame'], tabIds: [-1] },
-    }],
   });
+  return { ok: true, via: 'local' };
 }
 
-async function markReadViaFrame(index, messageId, stillUnread) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  try {
-    await ensureFrameRules();
-    if (!(await chrome.offscreen.hasDocument())) {
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html',
-        reasons: ['IFRAME_SCRIPTING', 'CLIPBOARD'],
-        justification: 'باز کردن نامرئی ایمیل در جیمیل تا خوانده‌شده ثبت شود',
-      });
-    }
-    lastDiag.frame = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'gframe', url: `${GMAIL}${index}/#inbox/${messageId}` });
-  } catch (e) {
-    console.warn('frame method failed to start', e);
-    return false;
-  }
-  // اولین بار بارگذاری جیمیل چند ثانیه طول می‌کشد؛ دفعات بعد سریع است
-  let done = false;
-  for (let t = 0; t < 12 && !done; t++) {
-    await sleep(2500);
-    done = !(await stillUnread());
-  }
-  // صفحه نامرئی یک دقیقه بعد از آخرین استفاده بسته می‌شود تا حافظه آزاد شود
-  chrome.alarms.create('closeFrame', { delayInMinutes: 1 });
-  return done;
+async function markUnread(entryId) {
+  const localRead = await getLocalRead();
+  delete localRead[entryId];
+  await chrome.storage.local.set({ localRead });
+  await check();
+  return { ok: true };
+}
+
+async function clearLocalRead() {
+  await chrome.storage.local.set({ localRead: {} });
+  await check();
 }
 
 chrome.alarms.onAlarm.addListener(async (a) => {
@@ -517,8 +411,8 @@ async function copyText(text) {
     if (!(await chrome.offscreen.hasDocument())) {
       await chrome.offscreen.createDocument({
         url: 'offscreen.html',
-        reasons: ['IFRAME_SCRIPTING', 'CLIPBOARD'],
-        justification: 'کپی کد تایید / باز کردن نامرئی ایمیل',
+        reasons: ['CLIPBOARD'],
+        justification: 'کپی کد تایید در کلیپ‌بورد',
       });
     }
     await chrome.runtime.sendMessage({ target: 'offscreen', type: 'copy', text });
@@ -563,8 +457,12 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     })();
     return;
   }
-  if (msg.type === 'diag') {
-    diagnostics().then(reply);
+  if (msg.type === 'markUnread') {
+    markUnread(msg.id).then(reply);
+    return true;
+  }
+  if (msg.type === 'clearLocalRead') {
+    clearLocalRead().then(() => reply(true));
     return true;
   }
   if (msg.type === 'markRead') {
