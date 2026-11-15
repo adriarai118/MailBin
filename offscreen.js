@@ -14,6 +14,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   if (msg.type !== 'gframe') return;
   // اگر جیمیل همین حساب قبلاً بارگذاری شده، فقط بخش # عوض می‌شود (بدون بارگذاری دوباره)
+  const t0 = Date.now();
+  let done = false;
+  const finish = (loaded) => { if (done) return; done = true; reply({ loaded, ms: Date.now() - t0 }); };
+  frame.addEventListener('load', () => finish(true), { once: true });
+  setTimeout(() => finish(false), 20000);
   frame.src = msg.url;
-  reply(true);
+  return true;
 });

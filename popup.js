@@ -362,6 +362,7 @@ async function showMail(m) {
       if (st.isConnected) {
         st.textContent = r && r.ok ? '✓ خوانده شد' : '⚠ در جیمیل خوانده‌شده ثبت نشد';
         st.classList.toggle('bad', !(r && r.ok));
+        if (!(r && r.ok)) st.append(' — ', el('a', { href: '#', class: 'diaglink', onclick: (e) => { e.preventDefault(); showDiag(); } }, 'عیب‌یابی'));
       }
     }
   } else {
@@ -370,6 +371,18 @@ async function showMail(m) {
       el('div', { class: 'snipfull', dir: 'auto' }, m.summary || '—'),
       el('button', { onclick: () => open(m.url) }, 'باز کردن در جیمیل')));
   }
+}
+
+async function showDiag() {
+  const d = await chrome.runtime.sendMessage({ type: 'diag' });
+  const text = JSON.stringify(d, null, 2);
+  const box = document.querySelector('.rbody');
+  if (!box) return;
+  const pre = el('pre', { class: 'diag', dir: 'ltr' }, text);
+  const btn = el('button', { onclick: async () => { await navigator.clipboard.writeText(text); btn.textContent = 'کپی شد ✓'; } }, 'کپی گزارش');
+  box.replaceChildren(el('div', { class: 'fallback' },
+    el('div', { class: 'note' }, 'این گزارش هیچ رمز یا توکنی ندارد. آن را کپی کنید و برای عیب‌یابی بفرستید:'),
+    pre, btn));
 }
 
 function svg(inner) {

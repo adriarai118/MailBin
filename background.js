@@ -269,15 +269,63 @@ async function getAt(i) {
   return cs.length ? cs[0].value : null;
 }
 
-async function gmailAct(i, id, act, freshIk) {
+// درخواست‌های اکستنشن به جیمیل با Origin خود جیمیل فرستاده شوند (جیمیل درخواست با Origin اکستنشن را رد می‌کند)
+async function ensureOriginRule() {
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [2],
+    addRules: [{
+      id: 2,
+      priority: 1,
+      action: {
+        type: 'modifyHeaders',
+        requestHeaders: [
+          { header: 'origin', operation: 'set', value: 'https://mail.google.com' },
+          { header: 'referer', operation: 'set', value: 'https://mail.google.com/mail/' },
+        ],
+      },
+      condition: { urlFilter: '||mail.google.com/mail/', resourceTypes: ['xmlhttprequest'], tabIds: [-1], requestMethods: ['post'] },
+    }],
+  });
+}
+
+let lastDiag = {};
+
+async function actUrl(i, id, act, freshIk) {
   const ik = await getIk(i, freshIk);
   const at = await getAt(i);
-  if (!ik || !at) return false;
-  const u = `${GMAIL}${i}/?ui=2&ik=${ik}&at=${encodeURIComponent(at)}&view=up&act=${act}&rt=j&th=${id}`;
+  lastDiag.ik = !!ik;
+  lastDiag.at = !!at;
+  if (!ik || !at) return null;
+  return { url: `${GMAIL}${i}/?ui=2&ik=${ik}&at=${encodeURIComponent(at)}&view=up&act=${act}&rt=j&th=${id}`, body: `at=${encodeURIComponent(at)}` };
+}
+
+async function gmailAct(i, id, act, freshIk) {
+  const u = await actUrl(i, id, act, freshIk);
+  if (!u) return false;
   try {
-    const r = await fetch(u, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `at=${encodeURIComponent(at)}` });
+    await ensureOriginRule();
+    const r = await fetch(u.url, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' }, body: u.body });
+    const t = await r.text();
+    lastDiag.api = { status: r.status, body: t.slice(0, 160).replace(/[A-Za-z0-9_-]{24,}/g, '…') };
     return r.ok;
-  } catch { return false; }
+  } catch (e) { lastDiag.api = { error: String(e) }; return false; }
+}
+
+// روش ۲: اگر جیمیل در یکی از تب‌ها باز است، همان درخواست از داخل خود صفحه جیمیل فرستاده شود (بدون تغییر در تب)
+async function gmailActViaTab(i, id, act) {
+  const tabs = await chrome.tabs.query({ url: `${GMAIL}${i}/*` });
+  lastDiag.gmailTab = tabs.length > 0;
+  if (!tabs.length) return false;
+  const u = await actUrl(i, id, act, false);
+  if (!u) return false;
+  for (const t of tabs) {
+    try {
+      const r = await chrome.tabs.sendMessage(t.id, { type: 'gmailAct', url: u.url, body: u.body }, { frameId: 0 });
+      lastDiag.tab = r;
+      if (r && r.ok) return true;
+    } catch (e) { lastDiag.tab = { error: String(e) }; }
+  }
+  return false;
 }
 
 async function markRead(index, messageId, entryId) {
@@ -302,17 +350,33 @@ async function markRead(index, messageId, entryId) {
     return (st?.accounts || []).some((a) => a.index === index && a.entries.some((e) => e.id === entryId));
   };
 
-  // روش ۱: درخواست مستقیم (سریع، ولی غیررسمی). اگر قبلاً جواب نداده، تا ۲۴ ساعت امتحان نمی‌شود.
-  const { apiBrokenAt = 0 } = await chrome.storage.local.get('apiBrokenAt');
-  if (Date.now() - apiBrokenAt > 86400000) {
-    let ok = await gmailAct(index, messageId, 'rd', false);
-    if (!ok) ok = await gmailAct(index, messageId, 'rd', true);
-    if (ok) { await sleep(1500); if (!(await stillUnread())) return { ok: true, via: 'api' }; }
-    await chrome.storage.local.set({ apiBrokenAt: Date.now() });
-  }
+  lastDiag = { time: new Date().toISOString() };
+  // روش ۱: درخواست مستقیم به جیمیل
+  let ok = await gmailAct(index, messageId, 'rd', false);
+  if (!ok) ok = await gmailAct(index, messageId, 'rd', true);
+  if (ok) { await sleep(1500); if (!(await stillUnread())) return finish(true, 'api'); }
+  // روش ۲: از داخل تب باز جیمیل (اگر باز باشد)
+  if (await gmailActViaTab(index, messageId, 'rd')) { await sleep(1500); if (!(await stillUnread())) return finish(true, 'tab'); }
+  // روش ۳: باز کردن ایمیل در یک صفحه نامرئی داخل اکستنشن (بدون تب)
+  return finish(await markReadViaFrame(index, messageId, stillUnread), 'frame');
+}
 
-  // روش ۲: باز کردن ایمیل در یک صفحه نامرئی داخل اکستنشن (بدون تب) — خود جیمیل آن را خوانده‌شده می‌کند
-  return { ok: await markReadViaFrame(index, messageId, stillUnread), via: 'frame' };
+async function finish(ok, via) {
+  lastDiag.result = ok ? `ok (${via})` : 'failed';
+  await chrome.storage.local.set({ markDiag: lastDiag });
+  return { ok, via };
+}
+
+// اطلاعات عیب‌یابی (بدون هیچ توکن یا مقدار کوکی)
+async function diagnostics() {
+  const cookies = await chrome.cookies.getAll({ domain: 'mail.google.com' });
+  const { markDiag } = await chrome.storage.local.get('markDiag');
+  return {
+    version: chrome.runtime.getManifest().version,
+    chrome: (navigator.userAgent.match(/Chrome\/[\d.]+/) || [''])[0],
+    gmailCookieNames: [...new Set(cookies.map((c) => c.name))].sort(),
+    lastMarkRead: markDiag || null,
+  };
 }
 
 // جیمیل اجازه نمایش در iframe نمی‌دهد؛ فقط برای فریم‌های نامرئی خود اکستنشن (tabId = -1) این محدودیت برداشته می‌شود
@@ -345,7 +409,7 @@ async function markReadViaFrame(index, messageId, stillUnread) {
         justification: 'باز کردن نامرئی ایمیل در جیمیل تا خوانده‌شده ثبت شود',
       });
     }
-    await chrome.runtime.sendMessage({ target: 'offscreen', type: 'gframe', url: `${GMAIL}${index}/#inbox/${messageId}` });
+    lastDiag.frame = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'gframe', url: `${GMAIL}${index}/#inbox/${messageId}` });
   } catch (e) {
     console.warn('frame method failed to start', e);
     return false;
@@ -498,6 +562,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       fastPoll();
     })();
     return;
+  }
+  if (msg.type === 'diag') {
+    diagnostics().then(reply);
+    return true;
   }
   if (msg.type === 'markRead') {
     markRead(msg.index, msg.messageId, msg.id).then(reply);

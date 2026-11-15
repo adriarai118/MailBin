@@ -106,6 +106,13 @@
   setTimeout(announce, 5000);
 
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+    // درخواست «خوانده‌شده» از داخل صفحه جیمیل (هم‌مبدأ با جیمیل)
+    if (msg.type === 'gmailAct' && location.hostname === 'mail.google.com' && window === window.top) {
+      fetch(msg.url, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' }, body: msg.body })
+        .then(async (r) => reply({ ok: r.ok, status: r.status, body: (await r.text()).slice(0, 160).replace(/[A-Za-z0-9_-]{24,}/g, '…') }))
+        .catch((e) => reply({ ok: false, error: String(e) }));
+      return true;
+    }
     if (msg.type !== 'fillOtp') return;
     if (fill(String(msg.code))) reply({ ok: true });
     // فریم‌هایی که فیلد ندارند جواب نمی‌دهند تا جواب فریم درست برسد

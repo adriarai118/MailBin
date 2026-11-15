@@ -165,3 +165,6 @@ body.reading .foot { display: none; }
 .updbar { border: 0; border-top: 1px solid var(--border); background: var(--accent-soft); color: var(--accent); font: inherit; font-weight: 600; font-size: 12px; padding: 7px; cursor: pointer; }
 .updbar[hidden] { display: none; }
 body.reading .updbar { display: none; }
+
+.diaglink { color: inherit; text-decoration: underline; }
+pre.diag { background: var(--surface); border-radius: 8px; padding: 10px; font: 11px/1.5 Consolas, monospace; white-space: pre-wrap; word-break: break-all; max-height: 330px; overflow: auto; text-align: left; margin: 0; }
